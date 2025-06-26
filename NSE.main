@@ -1,0 +1,540 @@
+import streamlit as st
+import pandas as pd
+import os
+import re
+import time
+import logging
+import shutil
+import zipfile
+import smtplib
+import hashlib
+import json
+import datetime
+import schedule
+import threading
+import plotly.graph_objects as go
+import plotly.express as px
+import seaborn as sns
+import matplotlib.pyplot as plt
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from datetime import datetime
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.action_chains import ActionChains
+from webdriver_manager.chrome import ChromeDriverManager
+
+# File paths and constants
+BASE_DOWNLOAD_DIR = r"C:\Users\Lenovo\Desktop\info inten"
+LOG_FILE = os.path.join(BASE_DOWNLOAD_DIR, "reports.log")
+OTHERS_FOLDER = os.path.join(BASE_DOWNLOAD_DIR, "Others")
+USER_DB_FILE = os.path.join(BASE_DOWNLOAD_DIR, "users.json")
+SCHEDULER_DB_FILE = os.path.join(BASE_DOWNLOAD_DIR, "schedulers.json")
+ANALYSIS_FOLDER = os.path.join(BASE_DOWNLOAD_DIR, "Analysis")
+
+# File Type Categories
+FILE_TYPES = {
+    "csv": "CSV",
+    "xls": "XLS",
+    "xlsx": "XLS",
+    "txt": "TXT",
+    "doc": "DOC",
+    "docx": "DOC",
+    "dat": "DAT",
+    "bat": "BAT"
+}
+
+# Ensure all directories exist
+os.makedirs(BASE_DOWNLOAD_DIR, exist_ok=True)
+os.makedirs(OTHERS_FOLDER, exist_ok=True)
+os.makedirs(ANALYSIS_FOLDER, exist_ok=True)
+
+# Logging Setup
+logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format="%(asctime)s - %(message)s")
+
+# Initialize user database if it doesn't exist
+if not os.path.exists(USER_DB_FILE):
+    with open(USER_DB_FILE, 'w') as f:
+        json.dump({}, f)
+
+# Initialize scheduler database if it doesn't exist
+if not os.path.exists(SCHEDULER_DB_FILE):
+    with open(SCHEDULER_DB_FILE, 'w') as f:
+        json.dump([], f)
+
+# =====================================================================
+# User Authentication Functions
+# =====================================================================
+
+def hash_password(password):
+    """Hash a password for storing."""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def load_users():
+    """Load user database."""
+    try:
+        with open(USER_DB_FILE, 'r') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def save_users(users):
+    """Save user database."""
+    with open(USER_DB_FILE, 'w') as f:
+        json.dump(users, f)
+
+def register_user(username, email, password):
+    """Register a new user."""
+    users = load_users()
+    
+    # Check if username already exists
+    if username in users:
+        return False, "Username already exists"
+    
+    # Check if email already exists
+    for user in users.values():
+        if user['email'] == email:
+            return False, "Email already exists"
+    
+    # Add new user
+    users[username] = {
+        'email': email,
+        'password': hash_password(password),
+    }
+    save_users(users)
+    return True, "Registration successful"
+
+def verify_user(username, password):
+    """Verify user credentials."""
+    users = load_users()
+    
+    if username not in users:
+        return False, "Username not found"
+    
+    if users[username]['password'] != hash_password(password):
+        return False, "Incorrect password"
+    
+    return True, "Login successful"
+
+def reset_password(username, email, new_password):
+    """Reset user password."""
+    users = load_users()
+    
+    if username not in users:
+        return False, "Username not found"
+    
+    if users[username]['email'] != email:
+        return False, "Email does not match"
+    
+    users[username]['password'] = hash_password(new_password)
+    save_users(users)
+    return True, "Password reset successful"
+
+def get_user_email(username):
+    """Get user email."""
+    users = load_users()
+    if username in users:
+        return users[username]['email']
+    return None
+
+# =====================================================================
+# Scheduler Functions
+# =====================================================================
+
+def load_schedulers():
+    """Load scheduler database."""
+    try:
+        with open(SCHEDULER_DB_FILE, 'r') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+def save_schedulers(schedulers):
+    """Save scheduler database."""
+    with open(SCHEDULER_DB_FILE, 'w') as f:
+        json.dump(schedulers, f)
+
+def add_scheduler(username, scheduler_name, execution_time, frequency):
+    """Add a new scheduler."""
+    schedulers = load_schedulers()
+    
+    # Create new scheduler
+    new_scheduler = {
+        'username': username,
+        'name': scheduler_name,
+        'execution_time': execution_time,
+        'frequency': frequency,
+        'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    
+    schedulers.append(new_scheduler)
+    save_schedulers(schedulers)
+    return True, "Scheduler created successfully"
+
+def get_user_schedulers(username):
+    """Get schedulers for a user."""
+    schedulers = load_schedulers()
+    return [s for s in schedulers if s['username'] == username]
+
+# =====================================================================
+# Email Functions
+# =====================================================================
+
+def send_email(to_email, subject, body):
+    """Send email to the user."""
+    try:
+        from_email = os.environ.get("EMAIL_ADDRESS", "shanmithaasrinivasan@gmail.com")
+        password = os.environ.get("EMAIL_PASSWORD", "keqb quan qutc dnkd")
+        smtp_server = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
+        smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+        
+        # Create message
+        msg = MIMEMultipart()
+        msg['From'] = from_email
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        
+        # Attach body
+        msg.attach(MIMEText(body, 'plain'))
+        
+        # Connect to server and send
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()
+        server.login(from_email, password)
+        server.send_message(msg)
+        server.quit()
+        
+        logging.info(f"Email sent to {to_email}")
+        return True, "Email sent successfully"
+    except Exception as e:
+        logging.error(f"Failed to send email: {str(e)}")
+        return False, f"Failed to send email: {str(e)}"
+
+# =====================================================================
+# NSE Report Download Functions
+# =====================================================================
+
+def log_message(message):
+    """Logs a message to the log file and prints it."""
+    logging.info(message)
+    print(message)
+
+def ensure_folder_structure(folder_path):
+    """Ensure Folder Structure Exists"""
+    os.makedirs(folder_path, exist_ok=True)
+
+def handle_exception(error_message, exception_obj):
+    """Handle Exceptions"""
+    log_message(f"ERROR: {error_message} - {str(exception_obj)}")
+
+def extract_date_from_filename(filename):
+    """Extract Date from Filename"""
+    match_ddmmyy = re.search(r'(\d{2})(\d{2})(\d{2})', filename)
+    match_ddmmyyyy = re.search(r'(\d{2})(\d{2})(2025)', filename)
+    match_yyyymmdd = re.search(r'(2025)(\d{2})(\d{2})', filename)
+    match_mmddyyyy = re.search(r'(\d{2})(\d{2})(2025)', filename)
+
+    if match_ddmmyyyy:
+        day, month, year = match_ddmmyyyy.groups()
+    elif match_yyyymmdd:
+        year, month, day = match_yyyymmdd.groups()
+    elif match_mmddyyyy:
+        month, day, year = match_mmddyyyy.groups()
+    elif match_ddmmyy:
+        day, month, year = match_ddmmyy.groups()
+        year = "2025"
+    else:
+        return None
+
+    return f"{day}-{month}-{year}"
+
+def get_file_type_folder(file_name):
+    """Get File Type Folder"""
+    file_extension = os.path.splitext(file_name)[1].lower().strip(".")
+    return FILE_TYPES.get(file_extension, None)
+
+def remove_duplicate_files(destination_folder, file_name):
+    """Remove Duplicate Files"""
+    file_base, file_ext = os.path.splitext(file_name)
+
+    for existing_file in os.listdir(destination_folder):
+        existing_base, existing_ext = os.path.splitext(existing_file)
+
+        if existing_base.startswith(file_base) and existing_ext == file_ext:
+            existing_path = os.path.join(destination_folder, existing_file)
+
+            try:
+                os.remove(existing_path)
+                log_message(f"Removed duplicate file: {existing_path}")
+            except Exception as e:
+                handle_exception(f"Failed to remove duplicate file {existing_file}", e)
+
+def move_file_to_folder(file_path):
+    """Move File to Correct Folder"""
+    try:
+        file_name = os.path.basename(file_path)
+        file_date = extract_date_from_filename(file_name)
+        file_type = get_file_type_folder(file_name)
+
+        if file_date == None:
+            log_message(f"Warning: Unable to determine date for {file_name}, moving to Others folder.")
+            file_date = "Others"
+
+        destination_folder = os.path.join(BASE_DOWNLOAD_DIR, file_date, file_type) if file_type else OTHERS_FOLDER
+        ensure_folder_structure(destination_folder)
+
+        remove_duplicate_files(destination_folder, file_name)
+        shutil.move(file_path, os.path.join(destination_folder, file_name))
+
+        log_message(f"Moved: {file_name} -> {destination_folder}")
+
+    except Exception as e:
+        handle_exception(f"Failed to move file {file_path}", e)
+
+def extract_zip(zip_path):
+    """Extract ZIP & Move Contents"""
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            extracted_files = zip_ref.namelist()
+            zip_ref.extractall(BASE_DOWNLOAD_DIR)
+
+        for file_name in extracted_files:
+            extracted_file_path = os.path.join(BASE_DOWNLOAD_DIR, file_name)
+
+            if os.path.exists(extracted_file_path):
+                move_file_to_folder(extracted_file_path)
+
+        os.remove(zip_path)
+        log_message(f"Deleted original ZIP: {zip_path}")
+
+    except Exception as e:
+        handle_exception(f"Error extracting {zip_path}", e)
+
+def download_nse_reports(driver):
+    """Download Reports from NSE"""
+    url = "https://www.nseindia.com/all-reports"
+    driver.get(url)
+    wait = WebDriverWait(driver, 30)
+    time.sleep(5)
+
+    try:
+        report_elements = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, ".reportsDownload a")))
+        log_message(f"Found {len(report_elements)} report(s).")
+
+        for i in range(len(report_elements)):
+            try:
+                report_elements = driver.find_elements(By.CSS_SELECTOR, ".reportsDownload a")
+                data_link = report_elements[i].get_attribute("data-link") or report_elements[i].get_attribute("href")
+
+                if data_link and data_link != "javascript:;":
+                    log_message(f"Downloading: {data_link}")
+                    driver.execute_script("window.open(arguments[0], '_blank');", data_link)
+                    time.sleep(5)
+                    driver.switch_to.window(driver.window_handles[0])
+                else:
+                    log_message(f"Downloading Report {i+1}")
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", report_elements[i])
+                    time.sleep(1)
+                    ActionChains(driver).move_to_element(report_elements[i]).click().perform()
+                    time.sleep(5)
+
+            except Exception as e:
+                handle_exception(f"Error downloading report {i+1}", e)
+
+    except Exception as e:
+        handle_exception("Failed to fetch reports from NSE", e)
+
+def setup_and_download():
+    """Initialize WebDriver & Download Reports"""
+    try:
+        chrome_options = webdriver.ChromeOptions()
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+        chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+        chrome_prefs = {
+            "download.default_directory": BASE_DOWNLOAD_DIR,
+            "download.prompt_for_download": False
+        }
+        chrome_options.add_experimental_option("prefs", chrome_prefs)
+
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+        download_nse_reports(driver)
+        driver.quit()
+
+    except Exception as e:
+        handle_exception("Failed to initialize WebDriver", e)
+
+def process_downloaded_files():
+    """Process Downloaded Files"""
+    downloaded_files = os.listdir(BASE_DOWNLOAD_DIR)
+
+    for file_name in downloaded_files:
+        file_path = os.path.join(BASE_DOWNLOAD_DIR, file_name)
+
+        if os.path.isfile(file_path) and file_name not in ["users.json", "schedulers.json", "reports.log"]:
+            if file_name.endswith(".zip"):
+                extract_zip(file_path)
+            else:
+                move_file_to_folder(file_path)
+
+def cleanup_others_folder():
+    """Cleanup Others Folder"""
+    reports_log_path = os.path.join(OTHERS_FOLDER, "reports.log")
+    txt_folder_path = os.path.join(OTHERS_FOLDER, "TXT")
+
+    if os.path.exists(reports_log_path):
+        os.remove(reports_log_path)
+        log_message("Deleted reports.log from Others folder.")
+
+    if os.path.exists(txt_folder_path):
+        shutil.rmtree(txt_folder_path)
+        log_message("Deleted TXT folder from Others folder.")
+
+def run_download_process(username=None):
+    """Run the complete download process"""
+    log_message("Starting NSE Report Download & Processing...")
+    setup_and_download()
+    process_downloaded_files()
+    cleanup_others_folder()
+    log_message("Process Completed Successfully!")
+    
+    # Send email notification if username provided
+    if username:
+        email = get_user_email(username)
+        if email:
+            today = datetime.now().strftime("%Y-%m-%d")
+            subject = f"NSE Reports Downloaded Successfully - {today}"
+            body = f"""
+            Dear {username},
+            
+            We're pleased to inform you that your scheduled NSE reports download has completed successfully.
+            
+            Date: {today}
+            Time: {datetime.now().strftime("%H:%M:%S")}
+            
+            You can view the downloaded reports in your dashboard.
+            
+            Thank you for using NSEBot.
+            """
+            send_email(email, subject, body)
+
+# =====================================================================
+# CSV Analysis Functions
+# =====================================================================
+
+def create_analysis_log(log_file_path, message):
+    """
+    Create or append to the Data Analysis Log file.
+    """
+    with open(log_file_path, "a", encoding="utf-8") as log_file:
+        log_file.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {message}\n")
+
+def analyze_csv(file_path, recursion=False):
+    if not recursion:
+        st.subheader("Stock Analysis")
+
+        # Add a "Start Analysis" button
+        if st.button("Start Analysis", key="start_analysis_button"):
+            # Run analysis and store results in session state
+            st.session_state["analysis_results"] = analyze_files_separately(BASE_DOWNLOAD_DIR)
+            st.success("Analysis completed successfully!")
+
+        # Check if analysis results are available in session state
+        if "analysis_results" not in st.session_state:
+            st.info("Click 'Start Analysis' to begin the analysis process.")
+            return
+
+        # Retrieve results from session state
+        buy_prices, sell_prices, top_amt, top_qty, top_short_qty, columns = st.session_state["analysis_results"]
+
+        # Add a unique key to the selectbox
+        category = st.selectbox(
+            "Select Analysis Category",
+            ["Top Buy Stocks", "Top Sold Stocks", "Highest Quantity", "Highest Amount"],
+            key="analysis_category_selectbox"
+        )
+
+        # Display results based on the selected category
+        if category == "Top Buy Stocks":
+            if not buy_prices.empty:
+                st.title("Top Buy Stocks")
+                fig, ax = plt.subplots(figsize=(10, 6))
+                sns.barplot(data=buy_prices, x=buy_prices.columns[1], y=buy_prices.columns[0], ax=ax, palette="Greens_d")
+                plt.title("Top 5 Buy Stocks")
+                st.pyplot(fig)
+                st.write(buy_prices)
+            else:
+                st.info("No data available for Top 5 Buy Stocks")
+
+        elif category == "Top Sold Stocks":
+            if not sell_prices.empty:
+                st.title("Top Sold Stocks")
+                fig, ax = plt.subplots(figsize=(10, 6))
+                sns.barplot(data=sell_prices, x=sell_prices.columns[1], y=sell_prices.columns[0], ax=ax, palette="Reds_d")
+                plt.title("Top 5 Sold Stocks")
+                st.pyplot(fig)
+                st.write(sell_prices)
+            else:
+                st.info("No data available for Top 5 Sold Stocks")
+
+        elif category == "Highest Quantity":
+            if not top_qty.empty:
+                st.title("Highest Quantity")
+                aggregated_qty = top_qty.groupby(top_qty.columns[0])[top_qty.columns[1]].sum().reset_index()
+                aggregated_qty.columns = ["Stock Name", "Total Quantity"]
+                aggregated_qty = aggregated_qty.sort_values(by="Total Quantity", ascending=False).head(5)
+                fig, ax = plt.subplots(figsize=(10, 6))
+                sns.barplot(data=aggregated_qty, x="Total Quantity", y="Stock Name", ax=ax, palette="Purples_d")
+                plt.title("Top 5 Stocks by Quantity")
+                st.pyplot(fig)
+                st.write(aggregated_qty)
+            else:
+                st.info("No data available for Highest Quantity")
+        
+        elif category == "Highest Amount":
+            if not top_amt.empty:
+                st.title("Highest Amount")
+                fig, ax = plt.subplots(figsize=(10, 6))
+                sns.barplot(data=top_amt, x=top_amt.columns[1], y=top_amt.columns[0], ax=ax, palette="Blues_d")
+                plt.title("Top 5 Amounts")
+                st.pyplot(fig)
+                st.write(top_amt)
+            else:
+                st.info("No data available for 5 Highest Amount")
+
+    # Recursive call logic
+    else:
+        if not os.path.exists(file_path):
+            print(f"File not found: {file_path}")
+            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), None
+
+        try:
+            # Read the CSV file, skipping bad lines
+            df = pd.read_csv(file_path, on_bad_lines='skip')
+        except Exception as e:
+            print(f"Error reading {file_path}: {e}")
+            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), None
+
+        # Drop duplicate columns
+        df = df.loc[:, ~df.columns.duplicated()]
+
+        # Identify the required columns based on keywords
+        name_col = None
+        buy_sell_col = None
+        price_col = None
+        qty_col = None
+        amt_col = None
+
+        for col in df.columns:
+            if 'client' in col.lower() or ('name' in col.lower() or 'symbol' in col.lower() or 'security' in col.lower()):
+                name_col = col
+            elif 'buy/sell' in col.lower() or 'transaction' in col.lower():
+                buy_sell_col = col
+            elif 'price' in col.lower() or 'trade price' in col.lower() or 'wght. avg. price' in col.lower():
+                price_col = col
+            elif 'qty' in col.lower() or 'quantity' in col.lower() or 'quantity traded' in col.lower():
+                qty_col = col
+            elif 'amt' in col.lower() or 'amount' in col.lower() or 'amt fin by all the members' in col.
